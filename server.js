@@ -26,9 +26,15 @@ const __dirname = dirname(__filename);
 
 const app = express();
 
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:3000')
-  .split(',')
-  .map(origin => origin.trim().replace(/\/$/, ''));
+const allowedOrigins = [
+  'https://centraldatabasefrontend.vercel.app',
+  'http://localhost:3000',
+];
+
+app.use((req, res, next) => {
+  console.log('Method:', req.method, 'Path:', req.path, 'Origin:', req.headers.origin);
+  next();
+});
 
 app.use(helmet());
 
@@ -40,11 +46,12 @@ app.use(cors({
       return callback(null, true);
     }
 
-    return callback(new Error(`CORS blocked for origin: ${origin}`));
+    return callback(null, false);
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization'],
+  optionsSuccessStatus: 204,
 }));
 
 app.use(express.json({ limit: '10mb' }));
@@ -64,13 +71,30 @@ app.use('/api/upload', uploadRoutes);
 app.use('/api/analytics', analyticsRouter);
 
 app.get('/health', (req, res) => {
-  res.json({ status: 'OK', timestamp: new Date(), environment: process.env.NODE_ENV });
+  res.json({
+    status: 'OK',
+    timestamp: new Date(),
+    environment: process.env.NODE_ENV,
+  });
 });
 
 app.get('/api', (req, res) => {
   res.json({
     message: 'Question Bank API',
     version: '2.0.0',
+    endpoints: {
+      admin: '/api/admin',
+      archives: '/api/archives',
+      chapters: '/api/chapters',
+      topics: '/api/topics',
+      questions: '/api/questions',
+      tags: '/api/tags',
+      sources: '/api/sources',
+      difficulties: '/api/difficulties',
+      academicLevels: '/api/academic-levels',
+      upload: '/api/upload',
+      analytics: '/api/analytics',
+    },
   });
 });
 
@@ -79,4 +103,5 @@ app.use(errorHandler);
 const PORT = process.env.PORT || 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running on port ${PORT}`);
+  console.log('✅ Allowed origins:', allowedOrigins);
 });
