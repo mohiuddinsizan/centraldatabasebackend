@@ -16,6 +16,8 @@ import topicRoutes from './routes/topics.js';
 import questionRoutes from './routes/questions.js';
 import tagRoutes from './routes/tags.js';
 import sourceRoutes from './routes/sources.js';
+import unitRoutes from './routes/units.js';
+import yearRoutes from './routes/years.js';
 import difficultyRoutes from './routes/difficulties.js';
 import academicLevelRoutes from './routes/academicLevels.js';
 import uploadRoutes from './routes/upload.js';
@@ -65,6 +67,8 @@ app.use('/api/topics', topicRoutes);
 app.use('/api/questions', questionRoutes);
 app.use('/api/tags', tagRoutes);
 app.use('/api/sources', sourceRoutes);
+app.use('/api/units', unitRoutes);
+app.use('/api/years', yearRoutes);
 app.use('/api/difficulties', difficultyRoutes);
 app.use('/api/academic-levels', academicLevelRoutes);
 app.use('/api/upload', uploadRoutes);
@@ -90,6 +94,8 @@ app.get('/api', (req, res) => {
       questions: '/api/questions',
       tags: '/api/tags',
       sources: '/api/sources',
+      units: '/api/units',
+      years: '/api/years',
       difficulties: '/api/difficulties',
       academicLevels: '/api/academic-levels',
       upload: '/api/upload',

@@ -1,16 +1,16 @@
 import pool from '../config/database.js';
 
-// Create Source (name only — year is a separate entity, linked per-question)
-const createSource = async (req, res) => {
+// Create Unit (predefined, selectable like tags)
+const createUnit = async (req, res) => {
   try {
     const { name } = req.body;
 
     if (!name || !name.trim()) {
-      return res.status(400).json({ error: 'Source name is required' });
+      return res.status(400).json({ error: 'Unit name is required' });
     }
 
     const result = await pool.query(
-      `INSERT INTO sources (name, created_by)
+      `INSERT INTO units (name, created_by)
        VALUES ($1, $2) RETURNING *`,
       [name.trim(), req.admin.id]
     );
@@ -18,24 +18,24 @@ const createSource = async (req, res) => {
     res.status(201).json(result.rows[0]);
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: 'A source with this name already exists' });
+      return res.status(409).json({ error: 'A unit with this name already exists' });
     }
     res.status(500).json({ error: error.message });
   }
 };
 
-// Get All Sources
-const getAllSources = async (req, res) => {
+// Get All Units (newest first; includes usage count)
+const getAllUnits = async (req, res) => {
   try {
     const result = await pool.query(
-      `SELECT s.*,
+      `SELECT u.*,
               a.username as created_by_name,
-              COUNT(qs.question_id) as usage_count
-       FROM sources s
-       LEFT JOIN admins a ON s.created_by = a.id
-       LEFT JOIN question_sources qs ON s.id = qs.source_id
-       GROUP BY s.id, a.username
-       ORDER BY s.created_at DESC`
+              COUNT(qu.question_id) as usage_count
+       FROM units u
+       LEFT JOIN admins a ON u.created_by = a.id
+       LEFT JOIN question_units qu ON u.id = qu.unit_id
+       GROUP BY u.id, a.username
+       ORDER BY u.created_at DESC`
     );
 
     res.json(result.rows);
@@ -44,14 +44,14 @@ const getAllSources = async (req, res) => {
   }
 };
 
-// Update Source (name only)
-const updateSource = async (req, res) => {
+// Update Unit
+const updateUnit = async (req, res) => {
   try {
     const { id } = req.params;
     const { name } = req.body;
 
     const result = await pool.query(
-      `UPDATE sources 
+      `UPDATE units 
        SET name = COALESCE($1, name)
        WHERE id = $2
        RETURNING *`,
@@ -59,41 +59,41 @@ const updateSource = async (req, res) => {
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Source not found' });
+      return res.status(404).json({ error: 'Unit not found' });
     }
 
     res.json(result.rows[0]);
   } catch (error) {
     if (error.code === '23505') {
-      return res.status(409).json({ error: 'A source with this name already exists' });
+      return res.status(409).json({ error: 'A unit with this name already exists' });
     }
     res.status(500).json({ error: error.message });
   }
 };
 
-// Delete Source
-const deleteSource = async (req, res) => {
+// Delete Unit (unlinks from questions automatically via ON DELETE CASCADE on join)
+const deleteUnit = async (req, res) => {
   try {
     const { id } = req.params;
 
     const result = await pool.query(
-      'DELETE FROM sources WHERE id = $1 RETURNING *',
+      'DELETE FROM units WHERE id = $1 RETURNING *',
       [id]
     );
 
     if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Source not found' });
+      return res.status(404).json({ error: 'Unit not found' });
     }
 
-    res.json({ message: 'Source deleted successfully' });
+    res.json({ message: 'Unit deleted successfully' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
 export {
-  createSource,
-  getAllSources,
-  updateSource,
-  deleteSource,
+  createUnit,
+  getAllUnits,
+  updateUnit,
+  deleteUnit,
 };

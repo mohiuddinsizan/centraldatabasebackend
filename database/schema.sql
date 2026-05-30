@@ -1,6 +1,6 @@
 -- ============================================
 -- QUESTION BANK DATABASE SCHEMA
--- Complete schema with image support
+-- Complete schema with image + VIDEO LINK + YEAR support
 -- ============================================
 
 -- Enable UUID extension
@@ -86,19 +86,30 @@ CREATE TABLE tags (
 );
 
 -- ============================================
--- SOURCES (Dynamic)
+-- SOURCES (Dynamic)  -- MODIFIED: name only
 -- ============================================
 CREATE TABLE sources (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
-    name VARCHAR(200) NOT NULL,
-    type VARCHAR(50), -- 'Self-made', 'Institute', 'Year'
-    year INT,
+    name VARCHAR(200) UNIQUE NOT NULL,
     created_by UUID REFERENCES admins(id),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- ============================================
--- QUESTIONS TABLE (Complete with Image Support)
+-- YEARS (Dynamic)  -- NEW
+-- Managed list of years, selectable like tags/sources.
+-- A year is attached to a source PER QUESTION (see question_sources.year_id),
+-- so you can sort by source alone, by year alone, or show "Source (Year)".
+-- ============================================
+CREATE TABLE years (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    value INT UNIQUE NOT NULL,
+    created_by UUID REFERENCES admins(id),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- ============================================
+-- QUESTIONS TABLE (Complete with Image + Video Support)
 -- ============================================
 CREATE TABLE questions (
     id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
@@ -124,6 +135,10 @@ CREATE TABLE questions (
     -- Supports text + LaTeX + multiple images
     answer_text TEXT,
     answer_images JSONB, -- [{"url": "/uploads/...", "label": "Solution diagram"}]
+    
+    -- VIDEO LINKS (NEW - optional, for all question types)
+    -- [{"url": "https://youtu.be/...", "label": "Full solution", "platform": "youtube"}]
+    video_links JSONB,
     
     -- MCQ OPTIONS (for simple MCQ only)
     -- Each option can have text + images + correct flag
@@ -171,10 +186,12 @@ CREATE TABLE question_tags (
     PRIMARY KEY (question_id, tag_id)
 );
 
--- Question-Sources (Many-to-Many)
+-- Question-Sources (Many-to-Many)  -- MODIFIED: optional year_id per link
+-- year_id is nullable: a source may or may not be tied to a year for this question.
 CREATE TABLE question_sources (
     question_id UUID REFERENCES questions(id) ON DELETE CASCADE,
     source_id UUID REFERENCES sources(id) ON DELETE CASCADE,
+    year_id UUID REFERENCES years(id) ON DELETE SET NULL,
     PRIMARY KEY (question_id, source_id)
 );
 
@@ -187,6 +204,10 @@ CREATE INDEX idx_questions_type ON questions(type);
 CREATE INDEX idx_topics_chapter ON topics(chapter_id);
 CREATE INDEX idx_chapters_archive ON chapters(archive_id);
 CREATE INDEX idx_questions_created_at ON questions(created_at DESC);
+
+-- Source / Year sorting indexes (NEW)
+CREATE INDEX idx_question_sources_source ON question_sources(source_id);
+CREATE INDEX idx_question_sources_year ON question_sources(year_id);
 
 -- Full-text search indexes (for keyword search)
 CREATE INDEX idx_questions_stem_text ON questions USING gin(to_tsvector('english', COALESCE(stem_text, '')));
@@ -216,6 +237,11 @@ INSERT INTO difficulty_levels (name) VALUES
 ('Medium'),
 ('Hard')
 ON CONFLICT (name) DO NOTHING;
+
+-- Seed Years (adjust the range as you like; admins can add more later)
+INSERT INTO years (value)
+SELECT generate_series(1990, EXTRACT(YEAR FROM CURRENT_DATE)::int)
+ON CONFLICT (value) DO NOTHING;
 
 -- ============================================
 -- HELPFUL VIEWS
@@ -255,6 +281,25 @@ LEFT JOIN archives a ON ch.archive_id = a.id
 LEFT JOIN difficulty_levels d ON q.difficulty_id = d.id
 LEFT JOIN admins c ON q.created_by = c.id
 LEFT JOIN admins e ON q.last_edited_by = e.id;
+
+-- View for source + year display & sorting (NEW)
+-- Gives one row per (question, source) with the optional year resolved.
+-- source_label = "Source (Year)" when a year is set, else just "Source".
+-- Use source_id to sort/filter by source only, year_value to sort/filter by year only.
+CREATE OR REPLACE VIEW question_sources_detail AS
+SELECT 
+    qs.question_id,
+    s.id          AS source_id,
+    s.name        AS source_name,
+    y.id          AS year_id,
+    y.value       AS year_value,
+    CASE 
+        WHEN y.value IS NOT NULL THEN s.name || ' (' || y.value || ')'
+        ELSE s.name
+    END           AS source_label
+FROM question_sources qs
+JOIN sources s ON qs.source_id = s.id
+LEFT JOIN years y ON qs.year_id = y.id;
 
 -- ============================================
 -- FUNCTIONS FOR VALIDATION
@@ -362,7 +407,7 @@ $$ LANGUAGE plpgsql;
 -- COMMENTS FOR DOCUMENTATION
 -- ============================================
 
-COMMENT ON TABLE questions IS 'Main questions table supporting MCQ, MCQ_CLUSTER, and WRITTEN types with full image support';
+COMMENT ON TABLE questions IS 'Main questions table supporting MCQ, MCQ_CLUSTER, and WRITTEN types with full image + video support';
 COMMENT ON COLUMN questions.type IS 'Question type: MCQ (simple multiple choice), MCQ_CLUSTER (stem with multiple MCQs), WRITTEN (descriptive)';
 COMMENT ON COLUMN questions.stem_text IS 'Common text for cluster questions (optional, supports LaTeX)';
 COMMENT ON COLUMN questions.stem_images IS 'Array of image objects for stem: [{"url": "...", "label": "..."}]';
@@ -370,8 +415,12 @@ COMMENT ON COLUMN questions.question_text IS 'Main question text (supports LaTeX
 COMMENT ON COLUMN questions.question_images IS 'Array of image objects for question';
 COMMENT ON COLUMN questions.answer_text IS 'Answer explanation (supports LaTeX)';
 COMMENT ON COLUMN questions.answer_images IS 'Array of image objects for answer';
+COMMENT ON COLUMN questions.video_links IS 'Optional array of video link objects: [{"url": "...", "label": "...", "platform": "youtube"}]';
 COMMENT ON COLUMN questions.options IS 'MCQ options with text, images, and correct flag';
 COMMENT ON COLUMN questions.sub_questions IS 'Array of sub-question objects for cluster/structured questions';
+COMMENT ON TABLE sources IS 'Dynamic source list (name only). Year is attached per-question via question_sources.year_id';
+COMMENT ON TABLE years IS 'Dynamic year list, selectable. Linked to a source per question via question_sources.year_id';
+COMMENT ON COLUMN question_sources.year_id IS 'Optional year for this source on this question (nullable)';
 
 -- ============================================
 -- COMPLETE SCHEMA
@@ -381,9 +430,9 @@ COMMENT ON COLUMN questions.sub_questions IS 'Array of sub-question objects for 
 DO $$
 BEGIN
     RAISE NOTICE '✅ Question Bank Database Schema Created Successfully!';
-    RAISE NOTICE '📊 Tables Created: 12';
-    RAISE NOTICE '🔍 Indexes Created: 8';
-    RAISE NOTICE '👁️  Views Created: 2';
+    RAISE NOTICE '📊 Tables Created: 13';
+    RAISE NOTICE '🔍 Indexes Created: 11';
+    RAISE NOTICE '👁️  Views Created: 3';
     RAISE NOTICE '⚙️  Functions Created: 4';
     RAISE NOTICE '🎯 Triggers Created: 2';
     RAISE NOTICE '';
@@ -397,6 +446,9 @@ BEGIN
     RAISE NOTICE '   - Question images';
     RAISE NOTICE '   - Option images (for MCQ)';
     RAISE NOTICE '   - Answer images';
+    RAISE NOTICE '';
+    RAISE NOTICE '🎬 Video Link Support (optional, all types)';
+    RAISE NOTICE '📅 Year Support (per-source, sortable by source or year)';
     RAISE NOTICE '';
     RAISE NOTICE '✨ Ready to use!';
 END $$;
