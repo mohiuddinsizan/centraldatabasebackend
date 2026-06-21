@@ -3,10 +3,10 @@
 /**
  * Admin Management CLI
  * Usage:
- *   node scripts/admin.js create             — interactive prompt to create admin
- *   node scripts/admin.js list               — list all admins
- *   node scripts/admin.js reset-password     — reset an admin's password
- *   node scripts/admin.js delete             — delete an admin
+ *   node scripts/admin.js create             — interactive prompt to create an account (admin or uploader)
+ *   node scripts/admin.js list               — list all accounts
+ *   node scripts/admin.js reset-password     — reset an account's password
+ *   node scripts/admin.js delete             — delete an account
  */
 
 import readline from 'readline';
@@ -29,9 +29,8 @@ const pool = new Pool({
   database: process.env.DB_NAME,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
-  ssl: {
-    rejectUnauthorized: false,
-  },
+  // Only use SSL when explicitly enabled. Company Postgres doesn't support it.
+  ssl: process.env.DB_SSL === 'true' ? { rejectUnauthorized: false } : false,
 });
 
 // ─── ANSI colours ─────────────────────────────────────────────────────────────
@@ -51,6 +50,8 @@ const info  = (msg) => console.log(`${c.cyan}ℹ  ${msg}${c.reset}`);
 const warn  = (msg) => console.log(`${c.yellow}⚠  ${msg}${c.reset}`);
 const label = (msg) => console.log(`\n${c.bold}${c.cyan}${msg}${c.reset}`);
 const hr    = ()    => console.log(`${c.gray}${'─'.repeat(50)}${c.reset}`);
+
+const VALID_ROLES = ['admin', 'uploader'];
 
 // ─── Readline helpers ─────────────────────────────────────────────────────────
 const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
@@ -99,17 +100,23 @@ const confirm = async (question) => {
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
 async function cmdCreate() {
-  label('Create New Admin');
+  label('Create New Account');
   hr();
 
   const username  = await ask('Username');
   const email     = await ask('Email');
   const fullName  = await ask('Full name');
+  const role      = (await ask('Role (admin/uploader)', 'admin')).toLowerCase();
   const password  = await askHidden('Password');
   const password2 = await askHidden('Confirm password');
 
   if (!username || !email || !password) {
     fail('Username, email and password are required.');
+    return;
+  }
+
+  if (!VALID_ROLES.includes(role)) {
+    fail(`Role must be one of: ${VALID_ROLES.join(', ')}.`);
     return;
   }
 
@@ -129,52 +136,56 @@ async function cmdCreate() {
     [username, email]
   );
   if (exists.rows.length > 0) {
-    fail('An admin with that username or email already exists.');
+    fail('An account with that username or email already exists.');
     return;
   }
 
   const hash = await bcrypt.hash(password, 12);
   const result = await pool.query(
-    `INSERT INTO admins (username, email, password_hash, full_name)
-     VALUES ($1, $2, $3, $4) RETURNING id, username, email, full_name, created_at`,
-    [username, email, hash, fullName || null]
+    `INSERT INTO admins (username, email, password_hash, full_name, role)
+     VALUES ($1, $2, $3, $4, $5) RETURNING id, username, email, full_name, role, created_at`,
+    [username, email, hash, fullName || null, role]
   );
 
   hr();
-  ok(`Admin created successfully!`);
+  ok(`Account created successfully!`);
   console.log(`${c.gray}  ID:       ${c.reset}${result.rows[0].id}`);
   console.log(`${c.gray}  Username: ${c.reset}${result.rows[0].username}`);
   console.log(`${c.gray}  Email:    ${c.reset}${result.rows[0].email}`);
   console.log(`${c.gray}  Name:     ${c.reset}${result.rows[0].full_name || '—'}`);
+  console.log(`${c.gray}  Role:     ${c.reset}${result.rows[0].role}`);
 }
 
 async function cmdList() {
-  label('All Admins');
+  label('All Accounts');
   hr();
 
   const result = await pool.query(
-    `SELECT id, username, email, full_name, created_at
-     FROM admins ORDER BY created_at ASC`
+    `SELECT id, username, email, full_name, role, created_at
+     FROM admins ORDER BY role ASC, created_at ASC`
   );
 
   if (result.rows.length === 0) {
-    warn('No admins found.');
+    warn('No accounts found.');
     return;
   }
 
   result.rows.forEach((admin, i) => {
-    console.log(`${c.bold}${i + 1}. ${admin.username}${c.reset}  ${c.gray}(${admin.id})${c.reset}`);
+    const roleTag = admin.role === 'admin'
+      ? `${c.green}[admin]${c.reset}`
+      : `${c.yellow}[uploader]${c.reset}`;
+    console.log(`${c.bold}${i + 1}. ${admin.username}${c.reset} ${roleTag}  ${c.gray}(${admin.id})${c.reset}`);
     console.log(`   Email:   ${admin.email}`);
     console.log(`   Name:    ${admin.full_name || '—'}`);
     console.log(`   Created: ${new Date(admin.created_at).toLocaleString()}`);
     if (i < result.rows.length - 1) console.log('');
   });
   hr();
-  info(`Total: ${result.rows.length} admin(s)`);
+  info(`Total: ${result.rows.length} account(s)`);
 }
 
 async function cmdResetPassword() {
-  label('Reset Admin Password');
+  label('Reset Account Password');
   hr();
 
   await cmdList();
@@ -183,7 +194,7 @@ async function cmdResetPassword() {
   const admin     = await pool.query('SELECT id, username FROM admins WHERE username = $1', [username]);
 
   if (admin.rows.length === 0) {
-    fail(`Admin "${username}" not found.`);
+    fail(`Account "${username}" not found.`);
     return;
   }
 
@@ -209,54 +220,59 @@ async function cmdResetPassword() {
 }
 
 async function cmdDelete() {
-  label('Delete Admin');
+  label('Delete Account');
   hr();
 
   await cmdList();
 
   const username = await ask('\nEnter username to delete');
-  const admin    = await pool.query('SELECT id, username FROM admins WHERE username = $1', [username]);
+  const admin    = await pool.query('SELECT id, username, role FROM admins WHERE username = $1', [username]);
 
   if (admin.rows.length === 0) {
-    fail(`Admin "${username}" not found.`);
+    fail(`Account "${username}" not found.`);
     return;
   }
 
-  const count = await pool.query('SELECT COUNT(*) FROM admins');
-  if (parseInt(count.rows[0].count) <= 1) {
-    fail('Cannot delete the last admin account.');
-    return;
+  const target = admin.rows[0];
+
+  // Only block deletion if this would remove the LAST admin.
+  if (target.role === 'admin') {
+    const count = await pool.query("SELECT COUNT(*) FROM admins WHERE role = 'admin'");
+    if (parseInt(count.rows[0].count) <= 1) {
+      fail('Cannot delete the last admin account.');
+      return;
+    }
   }
 
-  const confirmed = await confirm(`${c.red}Permanently delete admin "${username}"?${c.reset}`);
+  const confirmed = await confirm(`${c.red}Permanently delete "${username}" (${target.role})?${c.reset}`);
   if (!confirmed) { info('Cancelled.'); return; }
 
   await pool.query('DELETE FROM admins WHERE username = $1', [username]);
-  ok(`Admin "${username}" deleted.`);
+  ok(`Account "${username}" deleted.`);
 }
 
 // ─── Entry point ──────────────────────────────────────────────────────────────
 const command = process.argv[2];
 
 const commands = {
-  create:         cmdCreate,
-  list:           cmdList,
+  create:           cmdCreate,
+  list:             cmdList,
   'reset-password': cmdResetPassword,
-  delete:         cmdDelete,
+  delete:           cmdDelete,
 };
 
 if (!command || !commands[command]) {
   console.log(`
-${c.bold}${c.cyan}Admin CLI${c.reset}
+${c.bold}${c.cyan}Account CLI${c.reset}
 
 ${c.bold}Usage:${c.reset}
   node scripts/admin.js ${c.yellow}<command>${c.reset}
 
 ${c.bold}Commands:${c.reset}
-  ${c.yellow}create${c.reset}           Create a new admin account
-  ${c.yellow}list${c.reset}             List all admin accounts
-  ${c.yellow}reset-password${c.reset}   Reset an admin's password
-  ${c.yellow}delete${c.reset}           Delete an admin account
+  ${c.yellow}create${c.reset}           Create a new account (admin or uploader)
+  ${c.yellow}list${c.reset}             List all accounts
+  ${c.yellow}reset-password${c.reset}   Reset an account's password
+  ${c.yellow}delete${c.reset}           Delete an account
 `);
   process.exit(0);
 }
@@ -265,7 +281,7 @@ try {
   await pool.query('SELECT 1'); // test connection
 } catch (err) {
   fail(`Database connection failed: ${err.message}`);
-  fail('Check your .env DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD.');
+  fail('Check your .env DB_HOST, DB_PORT, DB_NAME, DB_USER, DB_PASSWORD, DB_SSL.');
   process.exit(1);
 }
 

@@ -22,6 +22,10 @@ let upload;
 if (isS3Configured) {
   s3Client = new S3Client({
     region: process.env.AWS_REGION || 'ap-south-1',
+    // Linode Object Storage is S3-compatible — must point at its endpoint.
+    // Defaults to Singapore (ap-south-1). Override via S3_ENDPOINT if needed.
+    endpoint: process.env.S3_ENDPOINT || 'https://ap-south-1.linodeobjects.com',
+    forcePathStyle: false, // Linode uses virtual-hosted style: bucket.region.linodeobjects.com
     credentials: {
       accessKeyId: process.env.AWS_ACCESS_KEY_ID,
       secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -39,7 +43,7 @@ if (isS3Configured) {
       key: (req, file, cb) => {
         const ext = path.extname(file.originalname).toLowerCase();
         const uniqueName = `${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
-        // Stored in S3 under uploads/ prefix
+        // Stored under uploads/ prefix
         // req.file.key will be exactly this string: "uploads/xxxx.jpg"
         cb(null, `uploads/${uniqueName}`);
       },
@@ -54,7 +58,7 @@ if (isS3Configured) {
     },
   });
 
-  console.log('✅ AWS S3 storage configured');
+  console.log('✅ Linode Object Storage configured');
 } else {
   // Local storage fallback
   const uploadDir = path.join(__dirname, '../uploads');
@@ -81,15 +85,15 @@ if (isS3Configured) {
     },
   });
 
-  console.log('⚠️  Using local storage (AWS S3 not configured)');
+  console.log('⚠️  Using local storage (object storage not configured)');
 }
 
 /**
- * Generate a 1-hour presigned GET URL for an S3 key.
+ * Generate a 1-hour presigned GET URL for a stored key.
  * key format stored in DB: "uploads/xxxx.jpg"
  *
  * Returns:
- *   - S3: presigned https URL valid for 1 hour
+ *   - Object storage: presigned https URL valid for 1 hour
  *   - Local: full localhost URL  e.g. http://localhost:5000/uploads/xxxx.jpg
  *   - null: if no key provided
  */

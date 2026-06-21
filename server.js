@@ -29,6 +29,8 @@ const __dirname = dirname(__filename);
 const app = express();
 
 const allowedOrigins = [
+  'https://qb.trspbd.com',
+  'https://www.trspbd.com',
   'https://centraldatabasefrontend.vercel.app',
   'http://localhost:3000',
 ];

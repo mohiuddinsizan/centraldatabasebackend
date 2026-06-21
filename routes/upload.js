@@ -5,6 +5,7 @@ import { fileURLToPath } from 'url';
 import { dirname } from 'path';
 import { S3Client, DeleteObjectCommand } from '@aws-sdk/client-s3';
 import { authenticateAdmin } from '../middleware/auth.js';
+import { requireRole } from '../middleware/requireRole.js';
 import { upload, uploadMultiple, getPresignedUrl } from '../config/s3.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -16,6 +17,8 @@ const isS3Configured = process.env.AWS_ACCESS_KEY_ID &&
 
 const s3Client = isS3Configured ? new S3Client({
   region: process.env.AWS_REGION || 'ap-south-1',
+  endpoint: process.env.S3_ENDPOINT || 'https://ap-south-1.linodeobjects.com', // 👈 Linode endpoint
+  forcePathStyle: false,
   credentials: {
     accessKeyId: process.env.AWS_ACCESS_KEY_ID,
     secretAccessKey: process.env.AWS_SECRET_ACCESS_KEY,
@@ -24,8 +27,11 @@ const s3Client = isS3Configured ? new S3Client({
 
 const router = express.Router();
 
+// Both admins and uploaders need uploads to build a question.
+const canUpload = requireRole('admin', 'uploader');
+
 // ── Upload multiple images ──────────────────────────────────────
-router.post('/', authenticateAdmin, (req, res) => {
+router.post('/', authenticateAdmin, canUpload, (req, res) => {
   uploadMultiple(req, res, async (err) => {
     if (err) return res.status(400).json({ error: err.message });
     if (!req.files || req.files.length === 0) {
@@ -49,7 +55,7 @@ router.post('/', authenticateAdmin, (req, res) => {
 
 // ── Generate presigned URL for a key ───────────────────────────
 // GET /api/upload/presign?key=uploads/xxxx.jpg
-router.get('/presign', authenticateAdmin, async (req, res) => {
+router.get('/presign', authenticateAdmin, canUpload, async (req, res) => {
   try {
     const { key } = req.query;
     if (!key) return res.status(400).json({ error: 'key is required' });
@@ -64,7 +70,7 @@ router.get('/presign', authenticateAdmin, async (req, res) => {
 
 // ── Delete image ────────────────────────────────────────────────
 // DELETE /api/upload?key=uploads/xxxx.jpg
-router.delete('/', authenticateAdmin, async (req, res) => {
+router.delete('/', authenticateAdmin, canUpload, async (req, res) => {
   try {
     const key = req.query.key;
     if (!key) return res.status(400).json({ error: 'File key is required' });

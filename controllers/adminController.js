@@ -27,7 +27,7 @@ const login = async (req, res) => {
     }
 
     const token = jwt.sign(
-      { adminId: admin.id },
+      { adminId: admin.id, role: admin.role }, // 👈 role baked into token
       process.env.JWT_SECRET,
       { expiresIn: process.env.JWT_EXPIRE }
     );
@@ -39,6 +39,7 @@ const login = async (req, res) => {
         username: admin.username,
         email: admin.email,
         full_name: admin.full_name,
+        role: admin.role, // 👈 frontend uses this to show the right pages
       },
     });
   } catch (error) {
@@ -59,7 +60,7 @@ const getStats = async (req, res) => {
     ] = await Promise.all([
       pool.query('SELECT COUNT(*) FROM archives'),
       pool.query('SELECT COUNT(*) FROM questions'),
-      pool.query('SELECT COUNT(*) FROM admins'),
+      pool.query("SELECT COUNT(*) FROM admins WHERE role = 'admin'"), // count admins only
       pool.query(`
         SELECT type, COUNT(*) as count
         FROM questions
