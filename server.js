@@ -22,6 +22,8 @@ import difficultyRoutes from './routes/difficulties.js';
 import academicLevelRoutes from './routes/academicLevels.js';
 import uploadRoutes from './routes/upload.js';
 import analyticsRouter from './routes/analyticsRouter.js';
+import natureRoutes from './routes/natures.js';
+
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -75,6 +77,7 @@ app.use('/api/difficulties', difficultyRoutes);
 app.use('/api/academic-levels', academicLevelRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/analytics', analyticsRouter);
+app.use('/api/natures', natureRoutes);
 
 app.get('/health', (req, res) => {
   res.json({

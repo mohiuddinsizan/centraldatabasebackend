@@ -43,16 +43,22 @@ const createQuestion = async (req, res) => {
   try {
     const {
       topicId, type, difficultyId,
+      searchCode,
       stemText, stemImages,
       questionText, questionImages,
       answerText, answerImages,
       videoLinks,
       options, subQuestions,
-      academicLevels, tags, sources, units,
+      academicLevels, tags, sources, units, natures,
     } = req.body;
 
     if (!topicId || !type) {
       return res.status(400).json({ error: 'Topic ID and question type are required' });
+    }
+
+    // NATURE is required on upload: at least one must be selected (can be more than one)
+    if (!natures || !Array.isArray(natures) || natures.length === 0) {
+      return res.status(400).json({ error: 'At least one nature must be selected' });
     }
 
     if (type === 'MCQ') {
@@ -82,17 +88,18 @@ const createQuestion = async (req, res) => {
 
     const questionResult = await client.query(
       `INSERT INTO questions 
-       (topic_id, type, difficulty_id, 
+       (topic_id, type, difficulty_id, search_code,
         stem_text, stem_images,
         question_text, question_images,
         answer_text, answer_images,
         video_links,
         options, sub_questions,
         created_by, last_edited_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $14)
        RETURNING *`,
       [
         topicId, type, difficultyId || null,
+        searchCode || null,
         stemText || null,
         stemImages ? JSON.stringify(stemImages) : null,
         questionText || null,
@@ -122,6 +129,10 @@ const createQuestion = async (req, res) => {
       const unitValues = units.map((unitId) => `('${questionId}', '${unitId}')`).join(',');
       await client.query(`INSERT INTO question_units (question_id, unit_id) VALUES ${unitValues}`);
     }
+
+    // NATURES (required, at least one)
+    const natureValues = natures.map((natureId) => `('${questionId}', '${natureId}')`).join(',');
+    await client.query(`INSERT INTO question_natures (question_id, nature_id) VALUES ${natureValues}`);
 
     await insertQuestionSources(client, questionId, normalizeSources(sources));
 
@@ -154,6 +165,7 @@ const getQuestionById = async (questionId) => {
             COALESCE(json_agg(DISTINCT jsonb_build_object('id', al.id, 'name', al.name)) FILTER (WHERE al.id IS NOT NULL), '[]') as academic_levels,
             COALESCE(json_agg(DISTINCT jsonb_build_object('id', tg.id, 'name', tg.name)) FILTER (WHERE tg.id IS NOT NULL), '[]') as tags,
             COALESCE(json_agg(DISTINCT jsonb_build_object('id', u.id, 'name', u.name)) FILTER (WHERE u.id IS NOT NULL), '[]') as units,
+            COALESCE(json_agg(DISTINCT jsonb_build_object('id', n.id, 'name', n.name)) FILTER (WHERE n.id IS NOT NULL), '[]') as natures,
             COALESCE(json_agg(DISTINCT jsonb_build_object(
               'id', s.id,
               'name', s.name,
@@ -174,6 +186,8 @@ const getQuestionById = async (questionId) => {
      LEFT JOIN tags tg ON qt.tag_id = tg.id
      LEFT JOIN question_units qu ON q.id = qu.question_id
      LEFT JOIN units u ON qu.unit_id = u.id
+     LEFT JOIN question_natures qn ON q.id = qn.question_id
+     LEFT JOIN natures n ON qn.nature_id = n.id
      LEFT JOIN question_sources qs ON q.id = qs.question_id
      LEFT JOIN sources s ON qs.source_id = s.id
      LEFT JOIN years y ON qs.year_id = y.id
@@ -193,13 +207,19 @@ const updateQuestion = async (req, res) => {
     const { id } = req.params;
     const {
       topicId, type, difficultyId,
+      searchCode,
       stemText, stemImages,
       questionText, questionImages,
       answerText, answerImages,
       videoLinks,
       options, subQuestions,
-      academicLevels, tags, sources, units,
+      academicLevels, tags, sources, units, natures,
     } = req.body;
+
+    // If natures is being changed, it must still contain at least one
+    if (natures !== undefined && (!Array.isArray(natures) || natures.length === 0)) {
+      return res.status(400).json({ error: 'At least one nature must be selected' });
+    }
 
     await client.query('BEGIN');
 
@@ -208,16 +228,18 @@ const updateQuestion = async (req, res) => {
        SET topic_id = COALESCE($1, topic_id),
            type = COALESCE($2, type),
            difficulty_id = $3,
-           stem_text = $4, stem_images = $5,
-           question_text = $6, question_images = $7,
-           answer_text = $8, answer_images = $9,
-           video_links = $10,
-           options = $11, sub_questions = $12,
-           last_edited_by = $13,
+           search_code = $4,
+           stem_text = $5, stem_images = $6,
+           question_text = $7, question_images = $8,
+           answer_text = $9, answer_images = $10,
+           video_links = $11,
+           options = $12, sub_questions = $13,
+           last_edited_by = $14,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $14 RETURNING *`,
+       WHERE id = $15 RETURNING *`,
       [
         topicId, type, difficultyId,
+        searchCode ?? null,
         stemText,
         stemImages ? JSON.stringify(stemImages) : null,
         questionText,
@@ -260,6 +282,13 @@ const updateQuestion = async (req, res) => {
       }
     }
 
+    if (natures !== undefined) {
+      await client.query('DELETE FROM question_natures WHERE question_id = $1', [id]);
+      // natures already validated above to be a non-empty array when provided
+      const natureValues = natures.map((natureId) => `('${id}', '${natureId}')`).join(',');
+      await client.query(`INSERT INTO question_natures (question_id, nature_id) VALUES ${natureValues}`);
+    }
+
     if (sources !== undefined) {
       await client.query('DELETE FROM question_sources WHERE question_id = $1', [id]);
       await insertQuestionSources(client, id, normalizeSources(sources));
@@ -279,16 +308,18 @@ const updateQuestion = async (req, res) => {
 
 // ============================================
 // GET ALL QUESTIONS WITH FILTERS
-// Multi-value: tagIds, sourceIds, unitIds, yearIds (comma-separated)
+// Multi-value: tagIds, sourceIds, unitIds, natureIds, yearIds (comma-separated)
 // Year range: yearFrom / yearTo
+// Also: searchCode (exact-ish match via keyword or dedicated filter)
 // ============================================
 const getQuestions = async (req, res) => {
   try {
     const {
       archiveId, chapterId, topicId,
       academicLevels, difficultyId, keyword, type,
-      tagIds, sourceIds, unitIds, yearIds,
+      tagIds, sourceIds, unitIds, natureIds, yearIds,
       tagId, sourceId, tags, sources,
+      searchCode,
       yearFrom, yearTo,
       sortBy = 'newest',
       page = 1, limit = 20,
@@ -323,11 +354,17 @@ const getQuestions = async (req, res) => {
       params.push(type);
     }
 
+    if (searchCode) {
+      conditions.push(`q.search_code ILIKE $${p++}`);
+      params.push(`%${searchCode}%`);
+    }
+
     if (keyword) {
       conditions.push(`(
         q.question_text ILIKE $${p}
         OR q.stem_text ILIKE $${p}
         OR q.answer_text ILIKE $${p}
+        OR q.search_code ILIKE $${p}
         OR EXISTS (
           SELECT 1
           FROM question_sources qsk
@@ -390,6 +427,21 @@ const getQuestions = async (req, res) => {
         )
       `);
       params.push(unitFilter);
+      p++;
+    }
+
+    const natureFilter = natureIds ? natureIds.split(',').filter(Boolean) : null;
+
+    if (natureFilter && natureFilter.length > 0) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1
+          FROM question_natures qn
+          WHERE qn.question_id = q.id
+          AND qn.nature_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(natureFilter);
       p++;
     }
 
@@ -535,6 +587,7 @@ const getQuestions = async (req, res) => {
 
               COALESCE(tag_data.tags, '[]') as tags,
               COALESCE(unit_data.units, '[]') as units,
+              COALESCE(nature_data.natures, '[]') as natures,
               COALESCE(level_data.academic_levels, '[]') as academic_levels
 
        ${baseFrom}
@@ -589,18 +642,29 @@ const getQuestions = async (req, res) => {
           WHERE qt.question_id = q.id
        ) tag_data ON true
 
-LEFT JOIN LATERAL (
-   SELECT
-     COALESCE(
-       json_agg(DISTINCT jsonb_build_object('id', u.id, 'name', u.name))
-       FILTER (WHERE u.id IS NOT NULL),
-       '[]'
-     ) as units,
-     MIN(u.name) as first_unit
-   FROM question_units qu
-   JOIN units u ON qu.unit_id = u.id
-   WHERE qu.question_id = q.id
-) unit_data ON true
+       LEFT JOIN LATERAL (
+          SELECT
+            COALESCE(
+              json_agg(DISTINCT jsonb_build_object('id', u.id, 'name', u.name))
+              FILTER (WHERE u.id IS NOT NULL),
+              '[]'
+            ) as units,
+            MIN(u.name) as first_unit
+          FROM question_units qu
+          JOIN units u ON qu.unit_id = u.id
+          WHERE qu.question_id = q.id
+       ) unit_data ON true
+
+       LEFT JOIN LATERAL (
+          SELECT COALESCE(
+            json_agg(DISTINCT jsonb_build_object('id', n.id, 'name', n.name))
+            FILTER (WHERE n.id IS NOT NULL),
+            '[]'
+          ) as natures
+          FROM question_natures qn
+          JOIN natures n ON qn.nature_id = n.id
+          WHERE qn.question_id = q.id
+       ) nature_data ON true
 
        LEFT JOIN LATERAL (
           SELECT COALESCE(
@@ -676,6 +740,7 @@ const moveQuestion = async (req, res) => {
 
 // ============================================
 // COPY QUESTION
+// search_code is NOT copied (it is unique-when-present) -> the copy starts blank.
 // ============================================
 const copyQuestion = async (req, res) => {
   const client = await pool.connect();
@@ -690,8 +755,8 @@ const copyQuestion = async (req, res) => {
 
     const q = original.rows[0];
     const copy = await client.query(
-      `INSERT INTO questions (topic_id, type, difficulty_id, stem_text, stem_images, question_text, question_images, answer_text, answer_images, video_links, options, sub_questions, created_by, last_edited_by)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13) RETURNING *`,
+      `INSERT INTO questions (topic_id, type, difficulty_id, search_code, stem_text, stem_images, question_text, question_images, answer_text, answer_images, video_links, options, sub_questions, created_by, last_edited_by)
+       VALUES ($1, $2, $3, NULL, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13) RETURNING *`,
       [targetTopicId, q.type, q.difficulty_id, q.stem_text, q.stem_images, q.question_text, q.question_images, q.answer_text, q.answer_images, q.video_links, q.options, q.sub_questions, req.admin.id]
     );
 
@@ -699,6 +764,7 @@ const copyQuestion = async (req, res) => {
     await client.query(`INSERT INTO question_academic_levels (question_id, academic_level_id) SELECT $1, academic_level_id FROM question_academic_levels WHERE question_id = $2`, [newId, id]);
     await client.query(`INSERT INTO question_tags (question_id, tag_id) SELECT $1, tag_id FROM question_tags WHERE question_id = $2`, [newId, id]);
     await client.query(`INSERT INTO question_units (question_id, unit_id) SELECT $1, unit_id FROM question_units WHERE question_id = $2`, [newId, id]);
+    await client.query(`INSERT INTO question_natures (question_id, nature_id) SELECT $1, nature_id FROM question_natures WHERE question_id = $2`, [newId, id]);
     await client.query(`INSERT INTO question_sources (question_id, source_id, year_id) SELECT $1, source_id, year_id FROM question_sources WHERE question_id = $2`, [newId, id]);
 
     await client.query('COMMIT');
