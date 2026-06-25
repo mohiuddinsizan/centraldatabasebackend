@@ -5,10 +5,6 @@ import pool from '../config/database.js';
 // ============================================
 
 // Normalize the `sources` payload into a uniform [{ sourceId, yearId }] shape.
-// Accepts either:
-//   - plain string UUIDs (legacy):        ["uuid1", "uuid2"]
-//   - objects with optional year:         [{ sourceId: "uuid1", yearId: "uuidY" }, { sourceId: "uuid2" }]
-// yearId is optional; null means "this source is not tied to a year".
 const normalizeSources = (sources) => {
   if (!Array.isArray(sources)) return [];
   return sources
@@ -56,7 +52,6 @@ const createQuestion = async (req, res) => {
       return res.status(400).json({ error: 'Topic ID and question type are required' });
     }
 
-    // NATURE is required on upload: at least one must be selected (can be more than one)
     if (!natures || !Array.isArray(natures) || natures.length === 0) {
       return res.status(400).json({ error: 'At least one nature must be selected' });
     }
@@ -130,7 +125,6 @@ const createQuestion = async (req, res) => {
       await client.query(`INSERT INTO question_units (question_id, unit_id) VALUES ${unitValues}`);
     }
 
-    // NATURES (required, at least one)
     const natureValues = natures.map((natureId) => `('${questionId}', '${natureId}')`).join(',');
     await client.query(`INSERT INTO question_natures (question_id, nature_id) VALUES ${natureValues}`);
 
@@ -149,7 +143,7 @@ const createQuestion = async (req, res) => {
 };
 
 // ============================================
-// GET QUESTION BY ID (Helper)
+// GET QUESTION BY ID (Helper) — live questions only
 // ============================================
 const getQuestionById = async (questionId) => {
   const result = await pool.query(
@@ -191,7 +185,7 @@ const getQuestionById = async (questionId) => {
      LEFT JOIN question_sources qs ON q.id = qs.question_id
      LEFT JOIN sources s ON qs.source_id = s.id
      LEFT JOIN years y ON qs.year_id = y.id
-     WHERE q.id = $1
+     WHERE q.id = $1 AND q.deleted_at IS NULL
      GROUP BY q.id, t.name, ch.name, a.name, d.name, c.username, c.full_name, e.username, e.full_name`,
     [questionId]
   );
@@ -216,7 +210,6 @@ const updateQuestion = async (req, res) => {
       academicLevels, tags, sources, units, natures,
     } = req.body;
 
-    // If natures is being changed, it must still contain at least one
     if (natures !== undefined && (!Array.isArray(natures) || natures.length === 0)) {
       return res.status(400).json({ error: 'At least one nature must be selected' });
     }
@@ -236,7 +229,7 @@ const updateQuestion = async (req, res) => {
            options = $12, sub_questions = $13,
            last_edited_by = $14,
            updated_at = CURRENT_TIMESTAMP
-       WHERE id = $15 RETURNING *`,
+       WHERE id = $15 AND deleted_at IS NULL RETURNING *`,
       [
         topicId, type, difficultyId,
         searchCode ?? null,
@@ -284,7 +277,6 @@ const updateQuestion = async (req, res) => {
 
     if (natures !== undefined) {
       await client.query('DELETE FROM question_natures WHERE question_id = $1', [id]);
-      // natures already validated above to be a non-empty array when provided
       const natureValues = natures.map((natureId) => `('${id}', '${natureId}')`).join(',');
       await client.query(`INSERT INTO question_natures (question_id, nature_id) VALUES ${natureValues}`);
     }
@@ -307,10 +299,7 @@ const updateQuestion = async (req, res) => {
 };
 
 // ============================================
-// GET ALL QUESTIONS WITH FILTERS
-// Multi-value: tagIds, sourceIds, unitIds, natureIds, yearIds (comma-separated)
-// Year range: yearFrom / yearTo
-// Also: searchCode (exact-ish match via keyword or dedicated filter)
+// GET ALL QUESTIONS WITH FILTERS (live only)
 // ============================================
 const getQuestions = async (req, res) => {
   try {
@@ -328,6 +317,9 @@ const getQuestions = async (req, res) => {
     const conditions = [];
     const params = [];
     let p = 1;
+
+    // Always hide trashed questions
+    conditions.push('q.deleted_at IS NULL');
 
     if (archiveId) {
       conditions.push(`a.id = $${p++}`);
@@ -509,9 +501,7 @@ const getQuestions = async (req, res) => {
       p++;
     }
 
-    const whereClause = conditions.length > 0
-      ? `WHERE ${conditions.join(' AND ')}`
-      : '';
+    const whereClause = `WHERE ${conditions.join(' AND ')}`;
 
     const baseFrom = `
       FROM questions q
@@ -532,42 +522,15 @@ const getQuestions = async (req, res) => {
     const offset = (parseInt(page, 10) - 1) * parseInt(limit, 10);
 
     let orderBy = `q.created_at DESC`;
-
-    if (sortBy === 'oldest') {
-      orderBy = `q.created_at ASC`;
-    }
-
-    if (sortBy === 'updated_desc') {
-      orderBy = `q.updated_at DESC NULLS LAST`;
-    }
-
-    if (sortBy === 'updated_asc') {
-      orderBy = `q.updated_at ASC NULLS LAST`;
-    }
-
-    if (sortBy === 'year_desc') {
-      orderBy = `max_year DESC NULLS LAST, q.created_at DESC`;
-    }
-
-    if (sortBy === 'year_asc') {
-      orderBy = `max_year ASC NULLS LAST, q.created_at DESC`;
-    }
-
-    if (sortBy === 'source_az') {
-      orderBy = `first_source ASC NULLS LAST, q.created_at DESC`;
-    }
-
-    if (sortBy === 'source_za') {
-      orderBy = `first_source DESC NULLS LAST, q.created_at DESC`;
-    }
-
-    if (sortBy === 'unit_az') {
-      orderBy = `first_unit ASC NULLS LAST, q.created_at DESC`;
-    }
-
-    if (sortBy === 'unit_za') {
-      orderBy = `first_unit DESC NULLS LAST, q.created_at DESC`;
-    }
+    if (sortBy === 'oldest') orderBy = `q.created_at ASC`;
+    if (sortBy === 'updated_desc') orderBy = `q.updated_at DESC NULLS LAST`;
+    if (sortBy === 'updated_asc') orderBy = `q.updated_at ASC NULLS LAST`;
+    if (sortBy === 'year_desc') orderBy = `max_year DESC NULLS LAST, q.created_at DESC`;
+    if (sortBy === 'year_asc') orderBy = `max_year ASC NULLS LAST, q.created_at DESC`;
+    if (sortBy === 'source_az') orderBy = `first_source ASC NULLS LAST, q.created_at DESC`;
+    if (sortBy === 'source_za') orderBy = `first_source DESC NULLS LAST, q.created_at DESC`;
+    if (sortBy === 'unit_az') orderBy = `first_unit ASC NULLS LAST, q.created_at DESC`;
+    if (sortBy === 'unit_za') orderBy = `first_unit DESC NULLS LAST, q.created_at DESC`;
 
     const dataResult = await pool.query(
       `SELECT q.*,
@@ -699,7 +662,7 @@ const getQuestions = async (req, res) => {
 };
 
 // ============================================
-// GET SINGLE QUESTION
+// GET SINGLE QUESTION (live only)
 // ============================================
 const getSingleQuestion = async (req, res) => {
   try {
@@ -713,7 +676,7 @@ const getSingleQuestion = async (req, res) => {
 };
 
 // ============================================
-// MOVE QUESTION
+// MOVE QUESTION (live only)
 // ============================================
 const moveQuestion = async (req, res) => {
   const client = await pool.connect();
@@ -724,7 +687,8 @@ const moveQuestion = async (req, res) => {
 
     await client.query('BEGIN');
     const result = await client.query(
-      `UPDATE questions SET topic_id = $1, last_edited_by = $2, updated_at = CURRENT_TIMESTAMP WHERE id = $3 RETURNING *`,
+      `UPDATE questions SET topic_id = $1, last_edited_by = $2, updated_at = CURRENT_TIMESTAMP
+       WHERE id = $3 AND deleted_at IS NULL RETURNING *`,
       [targetTopicId, req.admin.id, id]
     );
     if (result.rows.length === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Question not found' }); }
@@ -739,8 +703,7 @@ const moveQuestion = async (req, res) => {
 };
 
 // ============================================
-// COPY QUESTION
-// search_code is NOT copied (it is unique-when-present) -> the copy starts blank.
+// COPY QUESTION (live only). search_code is NOT copied -> copy starts blank.
 // ============================================
 const copyQuestion = async (req, res) => {
   const client = await pool.connect();
@@ -750,7 +713,7 @@ const copyQuestion = async (req, res) => {
     if (!targetTopicId) return res.status(400).json({ error: 'Target topic ID is required' });
 
     await client.query('BEGIN');
-    const original = await client.query('SELECT * FROM questions WHERE id = $1', [id]);
+    const original = await client.query('SELECT * FROM questions WHERE id = $1 AND deleted_at IS NULL', [id]);
     if (original.rows.length === 0) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Question not found' }); }
 
     const q = original.rows[0];
@@ -779,17 +742,103 @@ const copyQuestion = async (req, res) => {
 };
 
 // ============================================
-// DELETE QUESTION
+// SOFT DELETE QUESTION (admins + super admins) -> moves to trash.
+// search_code freed immediately via the partial unique index.
 // ============================================
 const deleteQuestion = async (req, res) => {
   try {
     const { id } = req.params;
-    const result = await pool.query('DELETE FROM questions WHERE id = $1 RETURNING *', [id]);
+    const result = await pool.query(
+      `UPDATE questions
+         SET deleted_at = CURRENT_TIMESTAMP, deleted_by = $2
+       WHERE id = $1 AND deleted_at IS NULL
+       RETURNING id`,
+      [id, req.admin.id]
+    );
     if (result.rows.length === 0) return res.status(404).json({ error: 'Question not found' });
-    res.json({ message: 'Question deleted successfully' });
+    res.json({ message: 'Question moved to trash' });
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
 };
 
-export { createQuestion, getQuestions, getSingleQuestion, updateQuestion, moveQuestion, copyQuestion, deleteQuestion };
+// ============================================
+// LIST TRASH (super admin only)
+// ============================================
+const listTrash = async (req, res) => {
+  try {
+    const result = await pool.query(
+      `SELECT q.id, q.type, q.search_code, q.question_text, q.stem_text, q.deleted_at,
+              t.name as topic_name, ch.name as chapter_name, a.name as archive_name,
+              db.username as deleted_by_name, db.full_name as deleted_by_fullname
+       FROM questions q
+       LEFT JOIN topics t ON q.topic_id = t.id
+       LEFT JOIN chapters ch ON t.chapter_id = ch.id
+       LEFT JOIN archives a ON ch.archive_id = a.id
+       LEFT JOIN admins db ON q.deleted_by = db.id
+       WHERE q.deleted_at IS NOT NULL
+       ORDER BY q.deleted_at DESC
+       LIMIT 500`
+    );
+    res.json({ questions: result.rows });
+  } catch (error) {
+    console.error('List trash error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ============================================
+// RESTORE QUESTION (super admin only)
+// If the code was reused by a live question meanwhile, clear it on restore.
+// ============================================
+const restoreQuestion = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      `UPDATE questions q
+         SET deleted_at = NULL,
+             deleted_by = NULL,
+             search_code = CASE
+               WHEN q.search_code IS NOT NULL AND EXISTS (
+                 SELECT 1 FROM questions q2
+                 WHERE q2.id <> q.id AND q2.deleted_at IS NULL AND q2.search_code = q.search_code
+               ) THEN NULL
+               ELSE q.search_code
+             END
+       WHERE q.id = $1 AND q.deleted_at IS NOT NULL
+       RETURNING id`,
+      [id]
+    );
+    if (result.rows.length === 0) return res.status(404).json({ error: 'Trashed question not found' });
+    res.json({ message: 'Question restored', id: result.rows[0].id });
+  } catch (error) {
+    console.error('Restore question error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+// ============================================
+// PERMANENT DELETE (super admin only) — only items already in trash
+// ============================================
+const permanentDeleteQuestion = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await pool.query(
+      'DELETE FROM questions WHERE id = $1 AND deleted_at IS NOT NULL RETURNING id',
+      [id]
+    );
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Trashed question not found (only trashed items can be permanently deleted)' });
+    }
+    res.json({ message: 'Question permanently deleted' });
+  } catch (error) {
+    console.error('Permanent delete error:', error.message);
+    res.status(500).json({ error: error.message });
+  }
+};
+
+export {
+  createQuestion, getQuestions, getSingleQuestion, updateQuestion,
+  moveQuestion, copyQuestion, deleteQuestion,
+  listTrash, restoreQuestion, permanentDeleteQuestion,
+};
