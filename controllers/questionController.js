@@ -31,6 +31,13 @@ const insertQuestionSources = async (client, questionId, normalizedSources) => {
   );
 };
 
+// Parse a comma-separated query param into a clean array (or null if empty).
+const csvList = (v) => {
+  if (v === undefined || v === null) return null;
+  const arr = String(v).split(',').map((s) => s.trim()).filter(Boolean);
+  return arr.length ? arr : null;
+};
+
 // ============================================
 // CREATE QUESTION
 // ============================================
@@ -304,12 +311,22 @@ const updateQuestion = async (req, res) => {
 const getQuestions = async (req, res) => {
   try {
     const {
+      // location (plural = new multi-select; singular = legacy fallback)
+      classes, archiveIds, chapterIds, topicIds,
       archiveId, chapterId, topicId,
-      academicLevels, difficultyId, keyword, type,
-      tagIds, sourceIds, unitIds, natureIds, yearIds,
+      // classification
+      types, type,
+      difficultyIds, difficultyId,
+      natureIds,
+      academicLevelIds, academicLevels,
+      // metadata
+      tagIds, unitIds, sourceIds, yearIds,
       tagId, sourceId, tags, sources,
-      searchCode,
+      // text / ranges
+      searchCode, keyword,
       yearFrom, yearTo,
+      createdFrom, createdTo,
+      // misc
       sortBy = 'newest',
       page = 1, limit = 20,
     } = req.query;
@@ -321,31 +338,142 @@ const getQuestions = async (req, res) => {
     // Always hide trashed questions
     conditions.push('q.deleted_at IS NULL');
 
-    if (archiveId) {
-      conditions.push(`a.id = $${p++}`);
-      params.push(archiveId);
+    // ── Location ──────────────────────────────────────────────────────────────
+    // NOTE: "class" is not a column on archives. In this schema a class
+    // (Class 5 … HSC … Admission) is an academic_level, linked via
+    // question_academic_levels. So `classes` (sent as level NAMES) is matched
+    // against academic_levels.name.
+    const classList = csvList(classes);
+    if (classList) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_academic_levels qalc
+          JOIN academic_levels alc ON qalc.academic_level_id = alc.id
+          WHERE qalc.question_id = q.id
+          AND alc.name = ANY($${p}::text[])
+        )
+      `);
+      params.push(classList);
+      p++;
     }
 
-    if (chapterId) {
-      conditions.push(`ch.id = $${p++}`);
-      params.push(chapterId);
+    const archiveList = csvList(archiveIds) || (archiveId ? [archiveId] : null);
+    if (archiveList) {
+      conditions.push(`a.id::text = ANY($${p}::text[])`);
+      params.push(archiveList);
+      p++;
     }
 
-    if (topicId) {
-      conditions.push(`t.id = $${p++}`);
-      params.push(topicId);
+    const chapterList = csvList(chapterIds) || (chapterId ? [chapterId] : null);
+    if (chapterList) {
+      conditions.push(`ch.id::text = ANY($${p}::text[])`);
+      params.push(chapterList);
+      p++;
     }
 
-    if (difficultyId) {
-      conditions.push(`q.difficulty_id = $${p++}`);
-      params.push(difficultyId);
+    const topicList = csvList(topicIds) || (topicId ? [topicId] : null);
+    if (topicList) {
+      conditions.push(`t.id::text = ANY($${p}::text[])`);
+      params.push(topicList);
+      p++;
     }
 
-    if (type) {
-      conditions.push(`q.type = $${p++}`);
-      params.push(type);
+    // ── Classification ────────────────────────────────────────────────────────
+    const typeList = csvList(types) || (type ? [type] : null);
+    if (typeList) {
+      conditions.push(`q.type = ANY($${p}::text[])`);
+      params.push(typeList);
+      p++;
     }
 
+    const difficultyList = csvList(difficultyIds) || (difficultyId ? [difficultyId] : null);
+    if (difficultyList) {
+      conditions.push(`q.difficulty_id::text = ANY($${p}::text[])`);
+      params.push(difficultyList);
+      p++;
+    }
+
+    const natureFilter = csvList(natureIds);
+    if (natureFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_natures qn
+          WHERE qn.question_id = q.id
+          AND qn.nature_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(natureFilter);
+      p++;
+    }
+
+    // academic_level_id is INT (note the ::int[] cast)
+    const levelFilter = csvList(academicLevelIds) || csvList(academicLevels);
+    if (levelFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_academic_levels qal
+          WHERE qal.question_id = q.id
+          AND qal.academic_level_id = ANY($${p}::int[])
+        )
+      `);
+      params.push(levelFilter.map(Number));
+      p++;
+    }
+
+    // ── Metadata ──────────────────────────────────────────────────────────────
+    const tagFilter = csvList(tagIds) || (tagId ? [tagId] : null) || csvList(tags);
+    if (tagFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_tags qt
+          WHERE qt.question_id = q.id
+          AND qt.tag_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(tagFilter);
+      p++;
+    }
+
+    const unitFilter = csvList(unitIds);
+    if (unitFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_units qu
+          WHERE qu.question_id = q.id
+          AND qu.unit_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(unitFilter);
+      p++;
+    }
+
+    const sourceFilter = csvList(sourceIds) || (sourceId ? [sourceId] : null) || csvList(sources);
+    if (sourceFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_sources qs
+          WHERE qs.question_id = q.id
+          AND qs.source_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(sourceFilter);
+      p++;
+    }
+
+    const yearFilter = csvList(yearIds);
+    if (yearFilter) {
+      conditions.push(`
+        EXISTS (
+          SELECT 1 FROM question_sources qsy
+          WHERE qsy.question_id = q.id
+          AND qsy.year_id = ANY($${p}::uuid[])
+        )
+      `);
+      params.push(yearFilter);
+      p++;
+    }
+
+    // ── Text / ranges ─────────────────────────────────────────────────────────
     if (searchCode) {
       conditions.push(`q.search_code ILIKE $${p++}`);
       params.push(`%${searchCode}%`);
@@ -370,106 +498,6 @@ const getQuestions = async (req, res) => {
         )
       )`);
       params.push(`%${keyword}%`);
-      p++;
-    }
-
-    if (academicLevels) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_academic_levels qal
-          WHERE qal.question_id = q.id
-          AND qal.academic_level_id = ANY($${p}::int[])
-        )
-      `);
-      params.push(academicLevels.split(',').map(Number));
-      p++;
-    }
-
-    const tagFilter = tagIds
-      ? tagIds.split(',').filter(Boolean)
-      : tagId
-        ? [tagId]
-        : tags
-          ? tags.split(',').filter(Boolean)
-          : null;
-
-    if (tagFilter && tagFilter.length > 0) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_tags qt
-          WHERE qt.question_id = q.id
-          AND qt.tag_id = ANY($${p}::uuid[])
-        )
-      `);
-      params.push(tagFilter);
-      p++;
-    }
-
-    const unitFilter = unitIds ? unitIds.split(',').filter(Boolean) : null;
-
-    if (unitFilter && unitFilter.length > 0) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_units qu
-          WHERE qu.question_id = q.id
-          AND qu.unit_id = ANY($${p}::uuid[])
-        )
-      `);
-      params.push(unitFilter);
-      p++;
-    }
-
-    const natureFilter = natureIds ? natureIds.split(',').filter(Boolean) : null;
-
-    if (natureFilter && natureFilter.length > 0) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_natures qn
-          WHERE qn.question_id = q.id
-          AND qn.nature_id = ANY($${p}::uuid[])
-        )
-      `);
-      params.push(natureFilter);
-      p++;
-    }
-
-    const sourceFilter = sourceIds
-      ? sourceIds.split(',').filter(Boolean)
-      : sourceId
-        ? [sourceId]
-        : sources
-          ? sources.split(',').filter(Boolean)
-          : null;
-
-    if (sourceFilter && sourceFilter.length > 0) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_sources qs
-          WHERE qs.question_id = q.id
-          AND qs.source_id = ANY($${p}::uuid[])
-        )
-      `);
-      params.push(sourceFilter);
-      p++;
-    }
-
-    const yearFilter = yearIds ? yearIds.split(',').filter(Boolean) : null;
-
-    if (yearFilter && yearFilter.length > 0) {
-      conditions.push(`
-        EXISTS (
-          SELECT 1
-          FROM question_sources qsy
-          WHERE qsy.question_id = q.id
-          AND qsy.year_id = ANY($${p}::uuid[])
-        )
-      `);
-      params.push(yearFilter);
       p++;
     }
 
@@ -498,6 +526,19 @@ const getQuestions = async (req, res) => {
         )
       `);
       params.push(parseInt(yearTo, 10));
+      p++;
+    }
+
+    // Upload date range (created_at). End date is inclusive of the whole day.
+    if (createdFrom) {
+      conditions.push(`q.created_at >= $${p}::date`);
+      params.push(createdFrom);
+      p++;
+    }
+
+    if (createdTo) {
+      conditions.push(`q.created_at < ($${p}::date + INTERVAL '1 day')`);
+      params.push(createdTo);
       p++;
     }
 

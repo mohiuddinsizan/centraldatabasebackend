@@ -23,6 +23,8 @@ import academicLevelRoutes from './routes/academicLevels.js';
 import uploadRoutes from './routes/upload.js';
 import analyticsRouter from './routes/analyticsRouter.js';
 import natureRoutes from './routes/natures.js';
+import publicSyncRoutes from './routes/publicSyncRoutes.js';
+
 
 
 const __filename = fileURLToPath(import.meta.url);
@@ -78,6 +80,8 @@ app.use('/api/academic-levels', academicLevelRoutes);
 app.use('/api/upload', uploadRoutes);
 app.use('/api/analytics', analyticsRouter);
 app.use('/api/natures', natureRoutes);
+app.use('/api/public', publicSyncRoutes);
+
 
 app.get('/health', (req, res) => {
   res.json({

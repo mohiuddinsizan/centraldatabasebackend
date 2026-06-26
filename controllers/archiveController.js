@@ -112,21 +112,21 @@ const updateArchive = async (req, res) => {
 };
 
 // ── Delete Archive ──────────────────────────────────────────────
-const deleteArchive = async (req, res) => {
-  try {
-    const { id } = req.params;
-    const result = await pool.query(
-      'DELETE FROM archives WHERE id = $1 RETURNING *',
-      [id]
-    );
-    if (result.rows.length === 0) {
-      return res.status(404).json({ error: 'Archive not found' });
-    }
-    res.json({ message: 'Archive deleted successfully' });
-  } catch (error) {
-    console.error('Delete archive error:', error.message);
-    res.status(500).json({ error: error.message });
-  }
-};
+// const deleteArchive = async (req, res) => {
+//   try {
+//     const { id } = req.params;
+//     const result = await pool.query(
+//       'DELETE FROM archives WHERE id = $1 RETURNING *',
+//       [id]
+//     );
+//     if (result.rows.length === 0) {
+//       return res.status(404).json({ error: 'Archive not found' });
+//     }
+//     res.json({ message: 'Archive deleted successfully' });
+//   } catch (error) {
+//     console.error('Delete archive error:', error.message);
+//     res.status(500).json({ error: error.message });
+//   }
+// };
 
-export { createArchive, getArchives, updateArchive, deleteArchive };
+export { createArchive, getArchives, updateArchive};
